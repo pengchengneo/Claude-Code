@@ -2617,6 +2617,34 @@ export function REPL({
   });
   const onQueryEvent = useCallback((event: Parameters<typeof handleMessageFromStream>[0]) => {
     handleMessageFromStream(event, newMessage => {
+      // ── Slave-mode relay: stream AI output back to the attached master CLI ──
+      // When this CLI is in slave mode, forward assistant text to the master so
+      // it can display the response. Tool progress is also relayed as tool_start.
+      {
+        const pipeState = store.getState().pipeIpc;
+        if (pipeState.role === 'slave') {
+          const client = getMasterPipeClient(); // null on slave side — we use the server ref
+          // On slave side we don't have the master client, we use sendToMaster via broadcast
+          // which is exposed through the PipeServer. We import the helper from usePipeIpc.
+          const sendFn = (globalThis as any).__pipeSendToMaster as ((msg: import('../utils/pipeTransport.js').PipeMessage) => void) | undefined;
+          if (sendFn) {
+            if (newMessage.type === 'assistant') {
+              const content = newMessage.message?.content;
+              if (Array.isArray(content)) {
+                for (const block of content) {
+                  if (block.type === 'text' && block.text) {
+                    sendFn({ type: 'stream', data: block.text });
+                  }
+                }
+              } else if (typeof content === 'string' && content) {
+                sendFn({ type: 'stream', data: content });
+              }
+            } else if (newMessage.type === 'progress') {
+              sendFn({ type: 'tool_start', data: (newMessage as any).data?.content ?? '' });
+            }
+          }
+        }
+      }
       if (isCompactBoundaryMessage(newMessage)) {
         // Fullscreen: keep pre-compact messages for scrollback. query.ts
         // slices at the boundary for API calls, Messages.tsx skips the
@@ -2879,6 +2907,17 @@ export function REPL({
       })]);
     }
     resetLoadingState();
+
+    // ── Slave-mode: signal turn completion to the attached master CLI ──
+    {
+      const pipeState = store.getState().pipeIpc;
+      if (pipeState.role === 'slave') {
+        const sendFn = (globalThis as any).__pipeSendToMaster as ((msg: import('../utils/pipeTransport.js').PipeMessage) => void) | undefined;
+        if (sendFn) {
+          sendFn({ type: 'done' });
+        }
+      }
+    }
 
     // Log query profiling report if enabled
     logQueryProfileReport();
@@ -3183,6 +3222,26 @@ export function REPL({
     // Re-pin scroll to bottom on submit so the user always sees the new
     // exchange (matches OpenCode's auto-scroll behavior).
     repinScroll();
+
+    // ── Master-mode intercept: forward user input to slave CLI via pipe ──
+    // When attached as master, user input goes to the remote slave instead
+    // of the local AI — unless it's a slash command (/ prefix) which always
+    // runs locally (so /detach etc. still work).
+    if (!speculationAccept && !input.trim().startsWith('/')) {
+      const currentPipeState = store.getState().pipeIpc;
+      if (currentPipeState.role === 'master') {
+        const client = getMasterPipeClient();
+        if (client && client.connected) {
+          try {
+            client.send({ type: 'prompt', data: input.trim(), from: currentPipeState.serverName ?? undefined });
+          } catch {
+            // Socket closed — will be caught by disconnect handler
+          }
+          helpers.clearBuffer();
+          return;
+        }
+      }
+    }
 
     // Resume loop mode if paused
     if (feature('PROACTIVE') || feature('KAIROS')) {

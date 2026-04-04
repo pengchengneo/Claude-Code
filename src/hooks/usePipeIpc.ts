@@ -90,6 +90,15 @@ export function usePipeIpc({ enabled, isLoading, onSubmitMessage }: Props): void
           pipeIpc: { ...prev.pipeIpc, serverName: pipeName },
         }))
 
+        // Expose sendToMaster globally so REPL onQueryEvent can relay output
+        // without importing hooks (avoids circular deps and closure issues).
+        ;(globalThis as any).__pipeSendToMaster = (msg: PipeMessage) => {
+          const masterSocket = masterSocketRef.current
+          if (server && masterSocket && !masterSocket.destroyed) {
+            server.sendTo(masterSocket, msg)
+          }
+        }
+
         logForDebugging(`[PipeIpc] Server started: ${pipeName}`)
 
         // --- Auto-reply to pings (health check) ---
@@ -212,6 +221,7 @@ export function usePipeIpc({ enabled, isLoading, onSubmitMessage }: Props): void
 
     return () => {
       disposed = true
+      ;(globalThis as any).__pipeSendToMaster = undefined
       if (serverRef.current) {
         void serverRef.current.close()
         serverRef.current = null
