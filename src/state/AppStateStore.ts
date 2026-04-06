@@ -86,6 +86,34 @@ export type FooterItem =
   | 'bridge'
   | 'companion'
 
+// ---------------------------------------------------------------------------
+// Pipe IPC types (master-slave CLI communication)
+// ---------------------------------------------------------------------------
+
+export type SessionEntry = {
+  type: 'prompt' | 'stream' | 'tool_start' | 'tool_result' | 'done' | 'error'
+  content: string
+  from: string
+  timestamp: string
+  meta?: Record<string, unknown>
+}
+
+export type SlaveInfo = {
+  name: string
+  connectedAt: string
+  status: 'connected' | 'busy' | 'idle'
+  history: SessionEntry[]
+}
+
+export type PipeIpcState = {
+  role: 'standalone' | 'master' | 'slave'
+  serverName: string | null
+  // Master-specific: connected slaves
+  slaves: Record<string, SlaveInfo>
+  // Slave-specific: which master controls us
+  attachedBy: string | null
+}
+
 export type AppState = DeepImmutable<{
   settings: SettingsJson
   verbose: boolean
@@ -449,6 +477,8 @@ export type AppState = DeepImmutable<{
   // Races against local UI + bridge + hooks + classifier via claim() in
   // interactiveHandler.ts. Constructed once in useManageMCPConnections.
   channelPermissionCallbacks?: ChannelPermissionCallbacks
+  // Pipe IPC: master-slave CLI communication
+  pipeIpc: PipeIpcState
 }
 
 export type AppStateStore = Store<AppState>
@@ -565,5 +595,11 @@ export function getDefaultAppState(): AppState {
     effortValue: undefined,
     activeOverlays: new Set<string>(),
     fastMode: false,
+    pipeIpc: {
+      role: 'standalone',
+      serverName: null,
+      slaves: {},
+      attachedBy: null,
+    },
   }
 }
